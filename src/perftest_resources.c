@@ -3820,6 +3820,8 @@ cleaning:
  ******************************************************************************/
 static uint32_t num_send, num_complete;
 static uint64_t cycle_send, cycle_complete;
+/* idle monitoring */
+static uint64_t empty_post, empty_poll;
 int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_param)
 {
 	uint64_t           	totscnt = 0;
@@ -3853,6 +3855,8 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	num_complete = 0;
 	cycle_send = 0;
 	cycle_complete = 0;
+	empty_post = 0;
+	empty_poll = 0;
 
 	struct dyn_poll_ctx *dyn_ctx = init_dyn_poll_ctx(user_param);
 	if (!dyn_ctx) {
@@ -3925,6 +3929,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	while (totscnt < tot_iters  || totccnt < tot_iters ||
 		(user_param->test_type == DURATION && user_param->state != END_STATE) ) {
 
+		int num_send_curr = 0;
 		/* main loop to run over all the qps and post each time n messages */
 		for (index =0 ; index < num_of_qps ; index++) {
 			/* Q: rate limiting, can be ignored if not set */
@@ -3945,6 +3950,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 
 				/* only take care of the actual sending */
 				num_send++;
+				num_send_curr++;
 				last_send = get_cycles();
 				if (ctx->send_rcredit) {
 					uint32_t swindow = ctx->scnt[index] + user_param->post_list - ctx->credit_buf[index];
@@ -4016,6 +4022,8 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				}
 				cycle_send += get_cycles() - last_send;
 			}
+			if (num_send_curr == 0)
+				empty_post++;
 		}
 
 		/* Q: if the requested number of requests have not completed */
@@ -4075,7 +4083,11 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 					fprintf(stderr, "poll CQ failed %d\n",ne);
 					return_value = FAILURE;
 					goto cleaning;
-					}
+    				}
+				else {
+					/* ne == 0 */
+					empty_poll++;
+				}
 		}
 	}
 	if (user_param->noPeak == ON && user_param->test_type == ITERATIONS)
@@ -4086,6 +4098,7 @@ cleaning:
 	free(wc);
 	printf("Num send: %u, cycles send: %lu, avg: %f; num check complete: %u, cycles check complete: %lu, avg:%f\n", 
 		num_send, cycle_send, (float)cycle_send / num_send, num_complete, cycle_complete, (float)cycle_complete / num_complete);
+	printf("Num empty post: %lu, empty poll: %lu\n", empty_post, empty_poll);
 	return return_value;
 }
 
