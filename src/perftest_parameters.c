@@ -1285,6 +1285,7 @@ static void force_dependecies(struct perftest_parameters *user_param)
 		if (!user_param->req_cq_mod) // user didn't request any cq_mod
 		{
 			user_param->cq_mod = DISABLED_CQ_MOD_VALUE;
+			printf("Disable CQ mod automatically set!\n");
 		}
 		else if (user_param->cq_mod > DISABLED_CQ_MOD_VALUE)
 		{
@@ -4184,6 +4185,7 @@ void print_report_bw (struct perftest_parameters *user_param, struct bw_report_d
 	}
 
 	cycles_to_units = get_cpu_mhz(user_param->cpu_freq_f) * 1000000;
+	// printf("cycles_to_units: %lf\n", cycles_to_units);
 	if ((cycles_to_units == 0 && !user_param->cpu_freq_f)) {
 		fprintf(stderr,"Can't produce a report\n");
 		exit(1);
@@ -4198,6 +4200,8 @@ void print_report_bw (struct perftest_parameters *user_param, struct bw_report_d
 
 	sum_of_test_cycles = ((double)(user_param->tcompleted[location_arr] - user_param->tposted[0]));
 
+	/* calculate average bandwidth */
+	// printf("tsize: %lld\n", tsize);
 	double bw_avg = ((double)tsize*num_of_calculated_iters * cycles_to_units) / (sum_of_test_cycles * format_factor);
 	double msgRate_avg = ((double)num_of_calculated_iters * cycles_to_units * run_inf_bi_factor) / (sum_of_test_cycles * 1000000);
 

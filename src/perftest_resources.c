@@ -3818,6 +3818,8 @@ cleaning:
 /******************************************************************************
  *
  ******************************************************************************/
+static uint32_t num_send, num_complete;
+static uint64_t cycle_send, cycle_complete;
 int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_param)
 {
 	uint64_t           	totscnt = 0;
@@ -3844,6 +3846,13 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	uintptr_t		primary_send_addr = ctx->sge_list[0].addr;
 	int			address_offset = 0;
 	int			flows_burst_iter = 0;
+	cycles_t	last_send, last_complete;
+
+	/* init, useful for multiple runs like -a */
+	num_send = 0;
+	num_complete = 0;
+	cycle_send = 0;
+	cycle_complete = 0;
 
 	struct dyn_poll_ctx *dyn_ctx = init_dyn_poll_ctx(user_param);
 	if (!dyn_ctx) {
@@ -3918,6 +3927,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 
 		/* main loop to run over all the qps and post each time n messages */
 		for (index =0 ; index < num_of_qps ; index++) {
+			/* Q: rate limiting, can be ignored if not set */
 			if (user_param->rate_limit_type == SW_RATE_LIMIT && is_sending_burst == 0) {
 				if (gap_deadline > get_cycles()) {
 					/* Go right to cq polling until gap time is over. */
@@ -3927,10 +3937,15 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				is_sending_burst = 1;
 				burst_iter = 0;
 			}
+			/* Q: if there are still requests to send, queue still available, and not rate limited */
+			/* Q: if the CPU is under-loaded, most cycles will be spent on polling this loop */
 			while ((ctx->scnt[index] < user_param->iters || user_param->test_type == DURATION) &&
 					(ctx->scnt[index] + user_param->post_list) <= (user_param->tx_depth + ctx->ccnt[index]) &&
 					!((user_param->rate_limit_type == SW_RATE_LIMIT ) && is_sending_burst == 0)) {
 
+				/* only take care of the actual sending */
+				num_send++;
+				last_send = get_cycles();
 				if (ctx->send_rcredit) {
 					uint32_t swindow = ctx->scnt[index] + user_param->post_list - ctx->credit_buf[index];
 					if (swindow >= user_param->rx_depth)
@@ -3948,6 +3963,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				if (user_param->test_type == DURATION && user_param->state == END_STATE)
 					break;
 
+				/* Q: batch sending using available functions */
 				err = post_send_method(ctx, index, user_param);
 				if (err) {
 					fprintf(stderr,"Couldn't post send: qp %d scnt=%lu \n",index,ctx->scnt[index]);
@@ -3980,6 +3996,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 					}
 				}
 
+				/* Q: port_list is essentially batch size, update the sent count */
 				ctx->scnt[index] += user_param->post_list;
 				totscnt += user_param->post_list;
 
@@ -3997,9 +4014,11 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 						is_sending_burst = 0;
 					}
 				}
+				cycle_send += get_cycles() - last_send;
 			}
 		}
 
+		/* Q: if the requested number of requests have not completed */
 		if (totccnt < tot_iters || (user_param->test_type == DURATION &&  totccnt < totscnt)) {
 				/* Make sure all completions from previous event were polled before waiting for another */
 				if (user_param->use_event && ne == 0) {
@@ -4009,6 +4028,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 						goto cleaning;
 					}
 				}
+				last_complete = get_cycles();
 				/* Dynamic CQE poll size adaptation */
 				ne = poll_completions(
 					ctx->send_cq,
@@ -4019,6 +4039,8 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 
 				if (ne > 0) {
 					for (i = 0; i < ne; i++) {
+						/* only count when something is actually polled */
+						num_complete++;
 						qp_index = (int)get_wr_id_qp_index(wc[i].wr_id);
 
 						if (wc[i].status != IBV_WC_SUCCESS) {
@@ -4047,6 +4069,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 							user_param->iters += user_param->cq_mod;
 						}
 					}
+					cycle_complete += get_cycles() - last_complete;
 
 				} else if (ne < 0) {
 					fprintf(stderr, "poll CQ failed %d\n",ne);
@@ -4061,6 +4084,8 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 cleaning:
 	free(dyn_ctx);
 	free(wc);
+	printf("Num send: %u, cycles send: %lu, avg: %f; num check complete: %u, cycles check complete: %lu, avg:%f\n", 
+		num_send, cycle_send, (float)cycle_send / num_send, num_complete, cycle_complete, (float)cycle_complete / num_complete);
 	return return_value;
 }
 
