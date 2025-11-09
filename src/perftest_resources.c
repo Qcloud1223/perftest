@@ -3861,7 +3861,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	int			flows_burst_iter = 0;
 	cycles_t	last_send, last_complete;
 	uint64_t	last_prof_cycle = get_cycles();
-	uint64_t	last_iters = 0;
+	uint64_t	*last_iters;
 	/* message size in bits / number of seconds
 	 * number of seconds = number of cycles / (cpu freq in MHz * 1M)
 	 */
@@ -3877,12 +3877,14 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	empty_post = 0;
 	empty_poll = 0;
 
+	last_iters = calloc(num_of_qps, sizeof(uint64_t));
+
 	if (user_param->profiling_file) {
 		char file_buffer[256];
 		sprintf(file_buffer, "/home/yihan/perftest/results/write_bw_%lu.csv", time(NULL));
 		printf("Writing results to %s\n", file_buffer);
 		result_file = fopen(file_buffer, "w");
-		fprintf(result_file, "cycle,goodput(Gbps),static throughput(Gbps),dynamic throughput(Gbps)\n");
+		fprintf(result_file, "cycle,QP,goodput(Gbps),static throughput(Gbps),dynamic throughput(Gbps)\n");
 	}
 
 	double xput_scale_ratio = goodput_to_xput(user_param->mtu, user_param->size);
@@ -4142,27 +4144,43 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 		/* profiling */
 		uint64_t curr_cycle = get_cycles();
 		if (curr_cycle - last_prof_cycle > user_param->profiling_interval * cpu_mhz) {
-			/* calculate xput based on completion count
-			 * note that user_param->iters is not intermediate completion count
-			 */
-			uint64_t interval_iter = totccnt - last_iters;
-			/* goodput calculation */
-			double interval_gbps = (double)interval_iter * iter_to_gbps / (curr_cycle - last_prof_cycle) / 1e9;
-			/* dynamic throughput */
+			/* 1. per-port dynamic throughput */
 			fclose(tx_file);
 			tx_file = fopen("/sys/class/infiniband/mlx5_1/ports/1/counters/port_xmit_data", "r");
 			fgets(tx_bytes_buffer, 256, tx_file);
 			uint64_t tx_bytes_curr = atoll(tx_bytes_buffer);
 			double xput_gbps = (double)(tx_bytes_curr - tx_bytes) * bytes_to_gbps / (curr_cycle - last_prof_cycle) / 1e9;
 
+			/* 2. per-QP goodput and static throughput */
+			double interval_sum = 0;
+			for (int i = 0; i < num_of_qps; i++) {
+				/* calculate xput based on completion count
+				 * note that user_param->iters is not intermediate completion count
+				 */
+				uint64_t interval_iter = ctx->ccnt[i] - last_iters[i];
+				/* goodput calculation */
+				double interval_gbps = (double)interval_iter * iter_to_gbps / (curr_cycle - last_prof_cycle) / 1e9;
+
+				last_iters[i] = ctx->ccnt[i];
+				// printf("Interval gbps: %f Gbps, totccnt: %lu, totscnt: %lu, tot_iters: %lu, interval_iter: %lu\n", interval_gbps, totccnt, totscnt, tot_iters, interval_iter);
+				if (user_param->profiling_file) {
+					fprintf(result_file, "%lu,%d,%f,%f,%f\n", curr_cycle, i, interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
+				} else
+					printf("QP: %d, Interval gbps: %f Gbps (goodput), %f Gbps (xput static), %f Gbps (xput dynamic)\n", i, interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
+				interval_sum += interval_gbps;
+			}
+
+			/* 3. sum the goodput if there are more than one qp */
+			if (num_of_qps > 1) {
+				/* use QP -1 to signify the sum of all */
+				if (user_param->profiling_file) {
+					fprintf(result_file, "%lu,%d,%f,%f,%f\n", curr_cycle, -1, interval_sum, interval_sum * xput_scale_ratio, xput_gbps);
+				} else
+					printf("QP: %d, Interval gbps: %f Gbps (goodput), %f Gbps (xput static), %f Gbps (xput dynamic), bandwidth util: %.3f\n", -1, interval_sum, interval_sum * xput_scale_ratio, xput_gbps, interval_sum * xput_scale_ratio/xput_gbps);
+			}
+
 			last_prof_cycle = curr_cycle;
-			last_iters = totccnt;
 			tx_bytes = tx_bytes_curr;
-			// printf("Interval gbps: %f Gbps, totccnt: %lu, totscnt: %lu, tot_iters: %lu, interval_iter: %lu\n", interval_gbps, totccnt, totscnt, tot_iters, interval_iter);
-			if (user_param->profiling_file) {
-				fprintf(result_file, "%lu,%f,%f,%f\n", curr_cycle, interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
-			} else
-				printf("Interval gbps: %f Gbps (goodput), %f Gbps (xput static), %f Gbps (xput dynamic)\n", interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
 		}
 	}
 	if (user_param->noPeak == ON && user_param->test_type == ITERATIONS)
