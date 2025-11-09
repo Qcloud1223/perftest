@@ -3866,6 +3866,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	 * number of seconds = number of cycles / (cpu freq in MHz * 1M)
 	 */
 	double 		iter_to_gbps = 0;
+	double		bytes_to_gbps = 0;
 
 	/* init, useful for multiple runs like -a */
 	num_send = 0;
@@ -3876,6 +3877,13 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	empty_poll = 0;
 
 	double xput_scale_ratio = goodput_to_xput(user_param->mtu, user_param->size);
+
+	/* counter-based, per-port, dynamic xput calculation */
+	/* TODO: hardcode */
+	FILE *tx_file = fopen("/sys/class/infiniband/mlx5_1/ports/1/counters/port_xmit_data", "r");
+	char tx_bytes_buffer[256];
+	fgets(tx_bytes_buffer, 256, tx_file);
+	uint64_t tx_bytes = atoll(tx_bytes_buffer);
 
 	struct dyn_poll_ctx *dyn_ctx = init_dyn_poll_ctx(user_param);
 	if (!dyn_ctx) {
@@ -3952,6 +3960,10 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	 * 		-> gbps = iter_to_gbps * iters / cycles
 	 */
 	iter_to_gbps = (double)(user_param->size) * 8 * cpu_hz;
+	/* note that the counter is presented in double words (32 bits),
+	 * check: https://enterprise-support.nvidia.com/s/article/understanding-mlx5-linux-counters-and-status-parameters
+	 */
+	bytes_to_gbps = (double)4 * 8 * cpu_hz;
 
 	/* main loop for posting */
 	while (totscnt < tot_iters  || totccnt < tot_iters ||
@@ -4127,10 +4139,18 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 			uint64_t interval_iter = totccnt - last_iters;
 			/* goodput calculation */
 			double interval_gbps = (double)interval_iter * iter_to_gbps / (curr_cycle - last_prof_cycle) / 1e9;
+			/* dynamic throughput */
+			fclose(tx_file);
+			tx_file = fopen("/sys/class/infiniband/mlx5_1/ports/1/counters/port_xmit_data", "r");
+			fgets(tx_bytes_buffer, 256, tx_file);
+			uint64_t tx_bytes_curr = atoll(tx_bytes_buffer);
+			double xput_gbps = (double)(tx_bytes_curr - tx_bytes) * bytes_to_gbps / (curr_cycle - last_prof_cycle) / 1e9;
+
 			last_prof_cycle = curr_cycle;
 			last_iters = totccnt;
+			tx_bytes = tx_bytes_curr;
 			// printf("Interval gbps: %f Gbps, totccnt: %lu, totscnt: %lu, tot_iters: %lu, interval_iter: %lu\n", interval_gbps, totccnt, totscnt, tot_iters, interval_iter);
-			printf("Interval gbps: %f Gbps (goodput), %f Gbps (xput static)\n", interval_gbps, interval_gbps * xput_scale_ratio);
+			printf("Interval gbps: %f Gbps (goodput), %f Gbps (xput static), %f Gbps (xput dynamic)\n", interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
 		}
 	}
 	if (user_param->noPeak == ON && user_param->test_type == ITERATIONS)
