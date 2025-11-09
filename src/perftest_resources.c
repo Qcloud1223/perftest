@@ -3867,6 +3867,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	 */
 	double 		iter_to_gbps = 0;
 	double		bytes_to_gbps = 0;
+	FILE		*result_file;
 
 	/* init, useful for multiple runs like -a */
 	num_send = 0;
@@ -3875,6 +3876,14 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	cycle_complete = 0;
 	empty_post = 0;
 	empty_poll = 0;
+
+	if (user_param->profiling_file) {
+		char file_buffer[256];
+		sprintf(file_buffer, "/home/yihan/perftest/results/write_bw_%lu.csv", time(NULL));
+		printf("Writing results to %s\n", file_buffer);
+		result_file = fopen(file_buffer, "w");
+		fprintf(result_file, "cycle,goodput(Gbps),static throughput(Gbps),dynamic throughput(Gbps)\n");
+	}
 
 	double xput_scale_ratio = goodput_to_xput(user_param->mtu, user_param->size);
 
@@ -4150,7 +4159,10 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 			last_iters = totccnt;
 			tx_bytes = tx_bytes_curr;
 			// printf("Interval gbps: %f Gbps, totccnt: %lu, totscnt: %lu, tot_iters: %lu, interval_iter: %lu\n", interval_gbps, totccnt, totscnt, tot_iters, interval_iter);
-			printf("Interval gbps: %f Gbps (goodput), %f Gbps (xput static), %f Gbps (xput dynamic)\n", interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
+			if (user_param->profiling_file) {
+				fprintf(result_file, "%lu,%f,%f,%f\n", curr_cycle, interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
+			} else
+				printf("Interval gbps: %f Gbps (goodput), %f Gbps (xput static), %f Gbps (xput dynamic)\n", interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
 		}
 	}
 	if (user_param->noPeak == ON && user_param->test_type == ITERATIONS)
