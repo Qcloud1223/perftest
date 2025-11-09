@@ -111,6 +111,10 @@ int main(int argc, char *argv[])
 		goto free_devname;
 	}
 
+	/* get TSC register frequency by reading msr */
+	uint64_t cpu_freq = get_tsc_freq_arch();
+	printf("[Note] Using TSC register frequency: %lu MHz\n", cpu_freq / 1000000);
+
 	if (user_param.output == FULL_VERBOSITY && user_param.machine == SERVER) {
 		printf("\n************************************\n");
 		printf("* Waiting for client to connect... *\n");

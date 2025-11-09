@@ -683,6 +683,8 @@ struct perftest_parameters {
 	int				cpu_id;
 	int				processing_hints;
 	int				dynamic_cqe_poll;
+	/* profiling interval in us */
+	int				profiling_interval;
 };
 
 struct report_options {

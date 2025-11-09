@@ -138,5 +138,7 @@ static inline cycles_t get_cycles(void)
 #endif
 
 extern double get_cpu_mhz(int);
+extern unsigned long get_tsc_freq_arch(void);
+
 
 #endif

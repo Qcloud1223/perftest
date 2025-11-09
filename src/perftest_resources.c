@@ -3842,6 +3842,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	int 			burst_iter = 0;
 	int 			is_sending_burst = 0;
 	int 			cpu_mhz = 0;
+	uint64_t		cpu_hz = 0;
 	int 			return_value = 0;
 	int			qp_index;
 	int			send_flows_index = 0;
@@ -3849,6 +3850,12 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	int			address_offset = 0;
 	int			flows_burst_iter = 0;
 	cycles_t	last_send, last_complete;
+	uint64_t	last_prof_cycle = get_cycles();
+	uint64_t	last_iters = 0;
+	/* message size in bits / number of seconds
+	 * number of seconds = number of cycles / (cpu freq in MHz * 1M)
+	 */
+	double 		iter_to_gbps = 0;
 
 	/* init, useful for multiple runs like -a */
 	num_send = 0;
@@ -3924,6 +3931,15 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 		gap_time = 1000000 * (1.0 / number_of_bursts);
 		gap_cycles = cpu_mhz * gap_time;
 	}
+
+	/* unconditionally reset CPU freq according to msr */
+	cpu_hz = get_tsc_freq_arch();
+	cpu_mhz = get_tsc_freq_arch() / 1000000;
+	/* message size in bits / number of seconds
+	 * number of seconds = number of cycles / CPU freq in Hz
+	 * 		-> gbps = iter_to_gbps * iters / cycles
+	 */
+	iter_to_gbps = (double)(user_param->size) * 8 * cpu_hz;
 
 	/* main loop for posting */
 	while (totscnt < tot_iters  || totccnt < tot_iters ||
@@ -4088,6 +4104,21 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 					/* ne == 0 */
 					empty_poll++;
 				}
+		}
+
+		/* profiling */
+		uint64_t curr_cycle = get_cycles();
+		if (curr_cycle - last_prof_cycle > user_param->profiling_interval * cpu_mhz) {
+			/* calculate xput based on completion count
+			 * note that user_param->iters is not intermediate completion count
+			 */
+			uint64_t interval_iter = totccnt - last_iters;
+			/* goodput calculation */
+			double interval_gbps = (double)interval_iter * iter_to_gbps / (curr_cycle - last_prof_cycle) / 1e9;
+			last_prof_cycle = curr_cycle;
+			last_iters = totccnt;
+			// printf("Interval gbps: %f Gbps, totccnt: %lu, totscnt: %lu, tot_iters: %lu, interval_iter: %lu\n", interval_gbps, totccnt, totscnt, tot_iters, interval_iter);
+			printf("Interval gbps: %f Gbps\n", interval_gbps);
 		}
 	}
 	if (user_param->noPeak == ON && user_param->test_type == ITERATIONS)

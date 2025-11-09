@@ -45,6 +45,9 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
+#include <cpuid.h>
+#include <fcntl.h>
 #include "get_clock.h"
 
 #ifndef DEBUG
@@ -211,6 +214,10 @@ static double proc_get_cpu_mhz(int no_cpu_freq_warn)
 }
 #endif
 
+/* sample CPU freq for several times, and interpolate an estimated value
+ * compare it with the base value read from /proc/cpuinfo
+ * if the diff is large enough, pick sample, else proc
+ */
 double get_cpu_mhz(int no_cpu_freq_warn)
 {
 	#if defined(__s390x__) || defined(__s390__)
@@ -300,3 +307,117 @@ cycles_t perf_get_cycles()
 	return cycles;
 }
 #endif
+
+#define x86_vendor_amd(t1, t2, t3)        \
+	((t1 == 0x68747541) && /* htuA */   \
+	 (t2 == 0x444d4163) && /* DMAc */   \
+	 (t3 == 0x69746e65))   /* itne */
+
+static unsigned int
+rte_cpu_get_model(uint32_t fam_mod_step)
+{
+	uint32_t family, model, ext_model;
+
+	family = (fam_mod_step >> 8) & 0xf;
+	model = (fam_mod_step >> 4) & 0xf;
+
+	if (family == 6 || family == 15) {
+		ext_model = (fam_mod_step >> 16) & 0xf;
+		model += (ext_model << 4);
+	}
+
+	return model;
+}
+
+static uint32_t
+check_model_wsm_nhm(uint8_t model)
+{
+	switch (model) {
+	/* Westmere */
+	case 0x25:
+	case 0x2C:
+	case 0x2F:
+	/* Nehalem */
+	case 0x1E:
+	case 0x1F:
+	case 0x1A:
+	case 0x2E:
+		return 1;
+	}
+
+	return 0;
+}
+
+static uint32_t
+check_model_gdm_dnv(uint8_t model)
+{
+	switch (model) {
+	/* Goldmont */
+	case 0x5C:
+	/* Denverton */
+	case 0x5F:
+		return 1;
+	}
+
+	return 0;
+}
+
+static int32_t
+rdmsr(int msr, uint64_t *val)
+{
+	int fd;
+	int ret;
+
+	fd = open("/dev/cpu/0/msr", O_RDONLY);
+	if (fd < 0)
+		return fd;
+
+	ret = pread(fd, val, sizeof(uint64_t), msr);
+
+	close(fd);
+
+	return ret;
+}
+
+/* from lib/eal/x86/rte_cycles.c */
+uint64_t
+get_tsc_freq_arch(void)
+{
+	uint64_t tsc_hz = 0;
+	uint32_t a, b, c, d, maxleaf;
+	uint8_t mult, model;
+	int32_t ret;
+
+	__cpuid(0, a, b, c, d);
+	if (x86_vendor_amd(b, c, d))
+		return 0;
+
+	/*
+	 * Time Stamp Counter and Nominal Core Crystal Clock
+	 * Information Leaf
+	 */
+	maxleaf = __get_cpuid_max(0, NULL);
+
+	if (maxleaf >= 0x15) {
+		__cpuid(0x15, a, b, c, d);
+		/* EBX : TSC/Crystal ratio, ECX : Crystal Hz */
+		if (b && c)
+			return c * (b / a);
+	}
+
+	__cpuid(0x1, a, b, c, d);
+	model = rte_cpu_get_model(a);
+
+	if (check_model_wsm_nhm(model))
+		mult = 133;
+	else if ((c & bit_AVX) || check_model_gdm_dnv(model))
+		mult = 100;
+	else
+		return 0;
+
+	ret = rdmsr(0xCE, &tsc_hz);
+	if (ret < 0)
+		return 0;
+
+	return ((tsc_hz >> 8) & 0xff) * mult * 1E6;
+}

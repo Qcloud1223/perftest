@@ -1010,6 +1010,8 @@ static void init_perftest_params(struct perftest_parameters *user_param)
 	user_param->cpu_id		= -1;
 	user_param->processing_hints			= -1;
 	user_param->dynamic_cqe_poll = ON;
+	/* default profiling interval: 1s */
+	user_param->profiling_interval = 1000000;
 }
 
 static int open_file_write(const char* file_path)
@@ -2643,6 +2645,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 	static int cpu_id_flag = 0;
 	static int processing_hints_flag = 0;
 	#endif
+	static int profiling_interval_flag = 0;
 
 	char *server_ip = NULL;
 	char *client_ip = NULL;
@@ -2827,6 +2830,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 			{ .name = "ph",		.has_arg = 1, .flag = &processing_hints_flag, .val = 1},
 			{ .name = "disable_dynamic_polling", .has_arg = 0, .flag = &disable_dynamic_polling_flag, .val = 1},
 			#endif
+			{.name = "profiling_interval", .has_arg = 1, .flag = &profiling_interval_flag, .val = 1 },
 			{0}
 		};
 		if (!duplicates_checker) {
@@ -3617,6 +3621,10 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 					processing_hints_flag = 0;
 				}
 				#endif
+				if (profiling_interval_flag) {
+					user_param->profiling_interval = atoi(optarg);
+					profiling_interval_flag = 0;
+				}
 				break;
 			default:
 				  fprintf(stderr," Invalid Command or flag.\n");
