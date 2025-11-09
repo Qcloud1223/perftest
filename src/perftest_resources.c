@@ -3815,6 +3815,16 @@ cleaning:
 	return return_value;
 }
 
+double goodput_to_xput(int mtu, int msg)
+{
+	int num_pkts = msg / mtu;
+	if (msg % mtu)
+		num_pkts++;
+	/* the first packet is with 74B header, others 58 */
+	int real_length = 74 + (num_pkts - 1) * 58;
+	return (double) (real_length + msg) / msg;
+}
+
 /******************************************************************************
  *
  ******************************************************************************/
@@ -3864,6 +3874,8 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	cycle_complete = 0;
 	empty_post = 0;
 	empty_poll = 0;
+
+	double xput_scale_ratio = goodput_to_xput(user_param->mtu, user_param->size);
 
 	struct dyn_poll_ctx *dyn_ctx = init_dyn_poll_ctx(user_param);
 	if (!dyn_ctx) {
@@ -4118,7 +4130,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 			last_prof_cycle = curr_cycle;
 			last_iters = totccnt;
 			// printf("Interval gbps: %f Gbps, totccnt: %lu, totscnt: %lu, tot_iters: %lu, interval_iter: %lu\n", interval_gbps, totccnt, totscnt, tot_iters, interval_iter);
-			printf("Interval gbps: %f Gbps\n", interval_gbps);
+			printf("Interval gbps: %f Gbps (goodput), %f Gbps (xput static)\n", interval_gbps, interval_gbps * xput_scale_ratio);
 		}
 	}
 	if (user_param->noPeak == ON && user_param->test_type == ITERATIONS)
