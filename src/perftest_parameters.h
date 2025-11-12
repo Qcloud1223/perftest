@@ -685,6 +685,8 @@ struct perftest_parameters {
 	int				dynamic_cqe_poll;
 	/* profiling interval in us */
 	int				profiling_interval;
+	/* enable writing profiling results to a file */
+	int 			profiling_file;
 };
 
 struct report_options {
