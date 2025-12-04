@@ -3891,7 +3891,13 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 
 	/* counter-based, per-port, dynamic xput calculation */
 	/* TODO: hardcode */
-	FILE *tx_file = fopen("/sys/class/infiniband/mlx5_1/ports/1/counters/port_xmit_data", "r");
+	char hw_counter_string[256];
+	sprintf(hw_counter_string, "/sys/class/infiniband/%s/ports/1/counters/port_xmit_data", user_param->ib_devname);
+	FILE *tx_file = fopen(hw_counter_string, "r");
+	if (!tx_file) {
+		fprintf(stderr, "Cannot read counter at IB dev, exit\n");
+		return 1;
+	}
 	char tx_bytes_buffer[256];
 	fgets(tx_bytes_buffer, 256, tx_file);
 	uint64_t tx_bytes = atoll(tx_bytes_buffer);
@@ -4146,7 +4152,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 		if (curr_cycle - last_prof_cycle > user_param->profiling_interval * cpu_mhz) {
 			/* 1. per-port dynamic throughput */
 			fclose(tx_file);
-			tx_file = fopen("/sys/class/infiniband/mlx5_1/ports/1/counters/port_xmit_data", "r");
+			tx_file = fopen(hw_counter_string, "r");
 			fgets(tx_bytes_buffer, 256, tx_file);
 			uint64_t tx_bytes_curr = atoll(tx_bytes_buffer);
 			double xput_gbps = (double)(tx_bytes_curr - tx_bytes) * bytes_to_gbps / (curr_cycle - last_prof_cycle) / 1e9;
