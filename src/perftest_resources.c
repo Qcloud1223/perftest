@@ -3884,23 +3884,30 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 		sprintf(file_buffer, "/home/yihan/perftest/results/write_bw_%lu.csv", time(NULL));
 		printf("Writing results to %s\n", file_buffer);
 		result_file = fopen(file_buffer, "w");
-		fprintf(result_file, "cycle,QP,goodput(Gbps),static throughput(Gbps),dynamic throughput(Gbps)\n");
+		if (user_param->profiling_hwctr)
+			fprintf(result_file, "cycle,QP,goodput(Gbps),static throughput(Gbps),dynamic throughput(Gbps)\n");
+		else
+			fprintf(result_file, "cycle,QP,goodput(Gbps),static throughput(Gbps)\n");
 	}
 
 	double xput_scale_ratio = goodput_to_xput(user_param->mtu, user_param->size);
 
 	/* counter-based, per-port, dynamic xput calculation */
-	/* TODO: hardcode */
 	char hw_counter_string[256];
-	sprintf(hw_counter_string, "/sys/class/infiniband/%s/ports/1/counters/port_xmit_data", user_param->ib_devname);
-	FILE *tx_file = fopen(hw_counter_string, "r");
-	if (!tx_file) {
-		fprintf(stderr, "Cannot read counter at IB dev, exit\n");
-		return 1;
-	}
+	FILE *tx_file = NULL;
 	char tx_bytes_buffer[256];
-	fgets(tx_bytes_buffer, 256, tx_file);
-	uint64_t tx_bytes = atoll(tx_bytes_buffer);
+	uint64_t tx_bytes = 0;
+
+	if (user_param->profiling_hwctr) {
+		sprintf(hw_counter_string, "/sys/class/infiniband/%s/ports/1/counters/port_xmit_data", user_param->ib_devname);
+		tx_file = fopen(hw_counter_string, "r");
+		if (!tx_file) {
+			fprintf(stderr, "Cannot read counter at IB dev, exit\n");
+			return 1;
+		}
+		fgets(tx_bytes_buffer, 256, tx_file);
+		tx_bytes = atoll(tx_bytes_buffer);
+	}
 
 	struct dyn_poll_ctx *dyn_ctx = init_dyn_poll_ctx(user_param);
 	if (!dyn_ctx) {
@@ -4151,11 +4158,15 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 		uint64_t curr_cycle = get_cycles();
 		if (curr_cycle - last_prof_cycle > user_param->profiling_interval * cpu_mhz) {
 			/* 1. per-port dynamic throughput */
-			fclose(tx_file);
-			tx_file = fopen(hw_counter_string, "r");
-			fgets(tx_bytes_buffer, 256, tx_file);
-			uint64_t tx_bytes_curr = atoll(tx_bytes_buffer);
-			double xput_gbps = (double)(tx_bytes_curr - tx_bytes) * bytes_to_gbps / (curr_cycle - last_prof_cycle) / 1e9;
+			double xput_gbps = 0.0;
+			uint64_t tx_bytes_curr = 0;
+			if (user_param->profiling_hwctr) {
+				fclose(tx_file);
+				tx_file = fopen(hw_counter_string, "r");
+				fgets(tx_bytes_buffer, 256, tx_file);
+				tx_bytes_curr = atoll(tx_bytes_buffer);
+				xput_gbps = (double)(tx_bytes_curr - tx_bytes) * bytes_to_gbps / (curr_cycle - last_prof_cycle) / 1e9;
+			}
 
 			/* 2. per-QP goodput and static throughput */
 			double interval_sum = 0;
@@ -4170,9 +4181,16 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				last_iters[i] = ctx->ccnt[i];
 				// printf("Interval gbps: %f Gbps, totccnt: %lu, totscnt: %lu, tot_iters: %lu, interval_iter: %lu\n", interval_gbps, totccnt, totscnt, tot_iters, interval_iter);
 				if (user_param->profiling_file) {
-					fprintf(result_file, "%lu,%d,%f,%f,%f\n", curr_cycle, i, interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
-				} else
-					printf("QP: %d, Interval gbps: %f Gbps (goodput), %f Gbps (xput static), %f Gbps (xput dynamic)\n", i, interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
+					if (user_param->profiling_hwctr)
+						fprintf(result_file, "%lu,%d,%f,%f,%f\n", curr_cycle, i, interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
+					else
+						fprintf(result_file, "%lu,%d,%f,%f\n", curr_cycle, i, interval_gbps, interval_gbps * xput_scale_ratio);
+				} else {
+					if (user_param->profiling_hwctr)
+						printf("QP: %d, Interval gbps: %f Gbps (goodput), %f Gbps (xput static), %f Gbps (xput dynamic)\n", i, interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
+					else
+						printf("QP: %d, Interval gbps: %f Gbps (goodput), %f Gbps (xput static)\n", i, interval_gbps, interval_gbps * xput_scale_ratio);
+				}
 				interval_sum += interval_gbps;
 			}
 
@@ -4180,9 +4198,16 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 			if (num_of_qps > 1) {
 				/* use QP -1 to signify the sum of all */
 				if (user_param->profiling_file) {
-					fprintf(result_file, "%lu,%d,%f,%f,%f\n", curr_cycle, -1, interval_sum, interval_sum * xput_scale_ratio, xput_gbps);
-				} else
-					printf("QP: %d, Interval gbps: %f Gbps (goodput), %f Gbps (xput static), %f Gbps (xput dynamic), bandwidth util: %.3f\n", -1, interval_sum, interval_sum * xput_scale_ratio, xput_gbps, interval_sum * xput_scale_ratio/xput_gbps);
+					if (user_param->profiling_hwctr)
+						fprintf(result_file, "%lu,%d,%f,%f,%f\n", curr_cycle, -1, interval_sum, interval_sum * xput_scale_ratio, xput_gbps);
+					else
+						fprintf(result_file, "%lu,%d,%f,%f\n", curr_cycle, -1, interval_sum, interval_sum * xput_scale_ratio);
+				} else {
+					if (user_param->profiling_hwctr)
+						printf("QP: %d, Interval gbps: %f Gbps (goodput), %f Gbps (xput static), %f Gbps (xput dynamic), bandwidth util: %.3f\n", -1, interval_sum, interval_sum * xput_scale_ratio, xput_gbps, interval_sum * xput_scale_ratio/xput_gbps);
+					else
+						printf("QP: %d, Interval gbps: %f Gbps (goodput), %f Gbps (xput static)\n", -1, interval_sum, interval_sum * xput_scale_ratio);
+				}
 			}
 
 			last_prof_cycle = curr_cycle;

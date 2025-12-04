@@ -687,6 +687,8 @@ struct perftest_parameters {
 	int				profiling_interval;
 	/* enable writing profiling results to a file */
 	int 			profiling_file;
+	/* enable reading hardware counters */
+	int 			profiling_hwctr;
 };
 
 struct report_options {

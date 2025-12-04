@@ -1013,6 +1013,7 @@ static void init_perftest_params(struct perftest_parameters *user_param)
 	/* default profiling interval: 1s */
 	user_param->profiling_interval = 1000000;
 	user_param->profiling_file = 0;
+	user_param->profiling_hwctr = 0;
 }
 
 static int open_file_write(const char* file_path)
@@ -2648,6 +2649,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 	#endif
 	static int profiling_interval_flag = 0;
 	static int profiling_file_flag = 0;
+	static int profiling_hwctr_flag = 0;
 
 	char *server_ip = NULL;
 	char *client_ip = NULL;
@@ -2834,6 +2836,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 			#endif
 			{.name = "profiling_interval", .has_arg = 1, .flag = &profiling_interval_flag, .val = 1 },
 			{.name = "profiling_file", .has_arg = 0, .flag = &profiling_file_flag, .val = 1 },
+			{.name = "profiling_hwctr", .has_arg = 0, .flag = &profiling_hwctr_flag, .val = 1 },
 			{0}
 		};
 		if (!duplicates_checker) {
@@ -3631,6 +3634,10 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 				if (profiling_file_flag) {
 					user_param->profiling_file = 1;
 					profiling_file_flag = 0;
+				}
+				if (profiling_hwctr_flag) {
+					user_param->profiling_hwctr = 1;
+					profiling_hwctr_flag = 0;
 				}
 				break;
 			default:
