@@ -691,6 +691,8 @@ struct perftest_parameters {
 	int 			profiling_hwctr;
 	/* enable fine grained logging utility */
 	int				fine_log;
+	/* enable recording CQE timestamps */
+	int 			cqe_timestamp;
 };
 
 struct report_options {

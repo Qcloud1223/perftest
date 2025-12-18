@@ -26,6 +26,10 @@
 #include <infiniband/efadv.h>
 #endif
 
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+
 #include "perftest_resources.h"
 #include "raw_ethernet_resources.h"
 
@@ -3868,6 +3872,10 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	double 		iter_to_gbps = 0;
 	double		bytes_to_gbps = 0;
 	FILE		*result_file;
+	int			cqe_file_size;	
+	char 		*cqe_buffer = NULL;
+	uint32_t	cqe_bytes = 0;
+	char 		cqe_filename[256];
 
 	/* init, useful for multiple runs like -a */
 	num_send = 0;
@@ -3888,6 +3896,31 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 			fprintf(result_file, "cycle,QP,goodput(Gbps),static throughput(Gbps),dynamic throughput(Gbps)\n");
 		else
 			fprintf(result_file, "cycle,QP,goodput(Gbps),static throughput(Gbps)\n");
+	}
+
+	/* write the timestamp each time we polled out some CQEs
+	 * Use MMIO file instead of normal one for performance
+	 */
+	if (user_param->cqe_timestamp) {
+		/* 512 MB file size at most */
+		cqe_file_size = 1 << 29;
+		sprintf(cqe_filename, "/home/yihan/perftest/results/cqe_timestamp_%lu.txt", time(NULL));
+		printf("Writing CQE timestamps to %s\n", cqe_filename);
+		int cqe_fd = open(cqe_filename, O_RDWR | O_CREAT | O_TRUNC, 0644);
+		if (cqe_fd == -1) {
+			fprintf(stderr, "Cannot open file!\n");
+			exit(-1);
+		}
+		if (posix_fallocate(cqe_fd, 0, cqe_file_size) != 0) {
+			fprintf(stderr, "Cannot reserve file size!\n");
+			exit(-1);
+    	}
+		cqe_buffer = mmap(NULL, cqe_file_size, PROT_READ | PROT_WRITE, MAP_SHARED, cqe_fd, 0);
+		if (cqe_buffer == MAP_FAILED) {
+			fprintf(stderr, "Cannot mmap!\n");
+			exit(-1);
+		}
+		close(cqe_fd);
 	}
 
 	double xput_scale_ratio = goodput_to_xput(user_param->mtu, user_param->size);
@@ -4154,7 +4187,25 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 							user_param->iters += user_param->cq_mod;
 						}
 					}
-					cycle_complete += get_cycles() - last_complete;
+					uint64_t cycle_curr = get_cycles();
+					cycle_complete += cycle_curr - last_complete;
+					if (user_param->cqe_timestamp) {
+						/* TODO: check if sprintf is fast enough? */
+						int bytes = sprintf(cqe_buffer, "%lu,%d,%lu\n", cycle_curr, ne, empty_poll);
+						if (bytes <= 0) {
+							fprintf(stderr, "sprintf failed\n");
+							exit(-1);
+						}
+						/* count the number of empty polls in each burst */
+						if (empty_poll)
+							empty_poll = 0;
+						cqe_buffer += bytes;
+						cqe_bytes += bytes;
+						if (cqe_bytes >= cqe_file_size) {
+							fprintf(stderr, "not enough file size!\n");
+							exit(-1);
+						}
+					}
 
 				} else if (ne < 0) {
 					fprintf(stderr, "poll CQ failed %d\n",ne);
@@ -4242,6 +4293,10 @@ cleaning:
 		num_send, cycle_send, (float)cycle_send / num_send, num_complete, cycle_complete, (float)cycle_complete / num_complete);
 	printf("Num empty post: %lu, empty poll: %lu\n", empty_post, empty_poll);
 	printf("Num unique send: %lu\n", num_unique_send);
+	if (user_param->cqe_timestamp) {
+		munmap(cqe_buffer, cqe_file_size);
+		truncate(cqe_filename, cqe_bytes);		
+	}
 	return return_value;
 }
 
