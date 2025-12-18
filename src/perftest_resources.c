@@ -3828,7 +3828,7 @@ double goodput_to_xput(int mtu, int msg)
 /******************************************************************************
  *
  ******************************************************************************/
-static uint32_t num_send, num_complete;
+static uint64_t num_send, num_complete, num_unique_send;
 static uint64_t cycle_send, cycle_complete;
 /* idle monitoring */
 static uint64_t empty_post, empty_poll;
@@ -4086,8 +4086,21 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				}
 				cycle_send += get_cycles() - last_send;
 			}
-			if (num_send_curr == 0)
+			if (num_send_curr == 0) {
 				empty_post++;
+				if (user_param->fine_log) {
+					if (empty_post % 10000000 == 0) {
+						printf("Empty poll #%lu: send queue: %lu, completion queue: %lu, diff: %lu\n", empty_post, ctx->scnt[index], ctx->ccnt[index], ctx->scnt[index] - ctx->ccnt[index]);
+					}
+				}
+			} else {
+				num_unique_send++;
+				if (user_param->fine_log) {
+					if (num_unique_send % 10000 == 0) {
+						printf("Unique send #%lu: %d, CQ poll size: %d\n", num_unique_send, num_send_curr, dyn_ctx->state.curr_size);
+					}
+				}
+			}
 		}
 
 		/* Q: if the requested number of requests have not completed */
@@ -4210,6 +4223,11 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				}
 			}
 
+			if (user_param->fine_log)
+				printf("Unique send number: %lu, empty RX polling: %lu\n", num_unique_send, empty_post);
+			num_unique_send = 0;
+			empty_post = 0;
+
 			last_prof_cycle = curr_cycle;
 			tx_bytes = tx_bytes_curr;
 		}
@@ -4220,9 +4238,10 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 cleaning:
 	free(dyn_ctx);
 	free(wc);
-	printf("Num send: %u, cycles send: %lu, avg: %f; num check complete: %u, cycles check complete: %lu, avg:%f\n", 
+	printf("Num send: %lu, cycles send: %lu, avg: %f; num check complete: %lu, cycles check complete: %lu, avg:%f\n", 
 		num_send, cycle_send, (float)cycle_send / num_send, num_complete, cycle_complete, (float)cycle_complete / num_complete);
 	printf("Num empty post: %lu, empty poll: %lu\n", empty_post, empty_poll);
+	printf("Num unique send: %lu\n", num_unique_send);
 	return return_value;
 }
 

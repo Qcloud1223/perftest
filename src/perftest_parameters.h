@@ -689,6 +689,8 @@ struct perftest_parameters {
 	int 			profiling_file;
 	/* enable reading hardware counters */
 	int 			profiling_hwctr;
+	/* enable fine grained logging utility */
+	int				fine_log;
 };
 
 struct report_options {
