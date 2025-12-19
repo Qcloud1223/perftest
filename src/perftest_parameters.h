@@ -693,6 +693,8 @@ struct perftest_parameters {
 	int				fine_log;
 	/* enable recording CQE timestamps */
 	int 			cqe_timestamp;
+	/* enable sampling-based request latency tracking */
+	int 			track_lat;
 };
 
 struct report_options {

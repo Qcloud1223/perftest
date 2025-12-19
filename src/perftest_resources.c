@@ -3872,10 +3872,18 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	double 		iter_to_gbps = 0;
 	double		bytes_to_gbps = 0;
 	FILE		*result_file;
+
+	/* CQE arrival statistics */
 	int			cqe_file_size;	
 	char 		*cqe_buffer = NULL;
 	uint32_t	cqe_bytes = 0;
 	char 		cqe_filename[256];
+
+	/* Request latency statistics */
+	int 		lat_file_size;
+	char 		*lat_buffer = NULL;
+	uint32_t	lat_bytes = 0;
+	char 		lat_filename[256];
 
 	/* init, useful for multiple runs like -a */
 	num_send = 0;
@@ -3921,6 +3929,27 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 			exit(-1);
 		}
 		close(cqe_fd);
+	}
+
+	if (user_param->track_lat) {
+		lat_file_size = 1 << 29;
+		sprintf(lat_filename, "/home/yihan/perftest/results/request_lat_%lu.txt", time(NULL));
+		printf("Writing request issue and finish to %s\n", lat_filename);
+		int lat_fd = open(lat_filename, O_RDWR | O_CREAT | O_TRUNC, 0644);
+		if (lat_fd == -1) {
+			fprintf(stderr, "Cannot open file!\n");
+			exit(-1);
+		}
+		if (posix_fallocate(lat_fd, 0, lat_file_size) != 0) {
+			fprintf(stderr, "Cannot reserve file size!\n");
+			exit(-1);
+    	}
+		lat_buffer = mmap(NULL, lat_file_size, PROT_READ | PROT_WRITE, MAP_SHARED, lat_fd, 0);
+		if (lat_buffer == MAP_FAILED) {
+			fprintf(stderr, "Cannot mmap!\n");
+			exit(-1);
+		}
+		close(lat_fd);
 	}
 
 	double xput_scale_ratio = goodput_to_xput(user_param->mtu, user_param->size);
@@ -4099,6 +4128,27 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 					}
 				}
 
+				if (user_param->track_lat) {
+					if (user_param->post_list != 1) {
+						fprintf(stderr, "latency tracking only supported under post list == 1! Exit\n");
+						exit(-1);
+					}
+					/* do latency sampling once per queue */
+					if (ctx->scnt[index] % user_param->tx_depth == 0) {
+						int bytes = sprintf(lat_buffer, "%llu,S\n", last_send);
+						if (bytes <= 0) {
+							fprintf(stderr, "sprintf failed\n");
+							exit(-1);
+						}
+						lat_buffer += bytes;
+						lat_bytes += bytes;
+						if (lat_bytes >= lat_file_size) {
+							fprintf(stderr, "not enough file size!\n");
+							exit(-1);
+						}
+					}
+				}
+
 				/* Q: port_list is essentially batch size, update the sent count */
 				ctx->scnt[index] += user_param->post_list;
 				totscnt += user_param->post_list;
@@ -4170,6 +4220,24 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 						if (user_param->fill_count && ctx->ccnt[qp_index] + user_param->cq_mod > user_param->iters) {
 							fill = user_param->iters - ctx->ccnt[qp_index];
 						}
+
+						if (user_param->track_lat) {
+							/* find the exact request we are tracking */
+							if (ctx->ccnt[qp_index] % user_param->tx_depth == 0) {
+								int bytes = sprintf(lat_buffer, "%llu,R\n", get_cycles());
+								if (bytes <= 0) {
+									fprintf(stderr, "sprintf failed\n");
+									exit(-1);
+								}
+								lat_buffer += bytes;
+								lat_bytes += bytes;
+								if (lat_bytes >= lat_file_size) {
+									fprintf(stderr, "not enough file size!\n");
+									exit(-1);
+								}
+							}
+						}
+						
 						ctx->ccnt[qp_index] += fill;
 						totccnt += fill;
 
@@ -4296,6 +4364,10 @@ cleaning:
 	if (user_param->cqe_timestamp) {
 		munmap(cqe_buffer, cqe_file_size);
 		truncate(cqe_filename, cqe_bytes);		
+	}
+	if (user_param->track_lat) {
+		munmap(lat_buffer, lat_file_size);
+		truncate(lat_filename, lat_bytes);		
 	}
 	return return_value;
 }

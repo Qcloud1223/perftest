@@ -1016,6 +1016,7 @@ static void init_perftest_params(struct perftest_parameters *user_param)
 	user_param->profiling_hwctr = 0;
 	user_param->fine_log = 0;
 	user_param->cqe_timestamp = 0;
+	user_param->track_lat = 0;
 }
 
 static int open_file_write(const char* file_path)
@@ -2654,6 +2655,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 	static int profiling_hwctr_flag = 0;
 	static int fine_log_flag = 0;
 	static int cqe_timestamp_flag = 0;
+	static int trace_lat_flag = 0;
 
 	char *server_ip = NULL;
 	char *client_ip = NULL;
@@ -2843,6 +2845,7 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 			{.name = "profiling_hwctr", .has_arg = 0, .flag = &profiling_hwctr_flag, .val = 1 },
 			{.name = "fine_log", .has_arg = 0, .flag = &fine_log_flag, .val = 1 },
 			{.name = "cqe_timestamp", .has_arg = 0, .flag = &cqe_timestamp_flag, .val = 1 },
+			{.name = "track_lat", .has_arg = 0, .flag = &trace_lat_flag, .val = 1 },
 			{0}
 		};
 		if (!duplicates_checker) {
@@ -3652,6 +3655,10 @@ int parser(struct perftest_parameters *user_param,char *argv[], int argc)
 				if (cqe_timestamp_flag) {
 					user_param->cqe_timestamp = 1;
 					cqe_timestamp_flag = 0;
+				}
+				if (trace_lat_flag) {
+					user_param->track_lat = 1;
+					trace_lat_flag = 0;
 				}
 				break;
 			default:
