@@ -695,6 +695,10 @@ struct perftest_parameters {
 	int 			cqe_timestamp;
 	/* enable sampling-based request latency tracking */
 	int 			track_lat;
+	/* enable PFC profiling */
+	int				profiling_pfc;
+	/* enable CNP profiling */
+	int				profiling_cnp;
 };
 
 struct report_options {

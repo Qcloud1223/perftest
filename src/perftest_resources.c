@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <linux/ethtool.h>
+#include <linux/sockios.h>
+#include <net/if.h>
 
 #include "perftest_resources.h"
 #include "raw_ethernet_resources.h"
@@ -3893,6 +3898,22 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	empty_post = 0;
 	empty_poll = 0;
 
+	/* additional profiling counters */
+	struct ethtool_stats *eth_stats;
+	struct ifreq ifr;
+	memset(&ifr, 0, sizeof(ifr));
+	/* config FD */
+	int pfc_fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (pfc_fd < 0) {
+		perror("Socket creation failed");
+		return EXIT_FAILURE;
+	}
+	int pfc_idx = -1;
+	int cnp_fd = -1;
+	char cnp_buf[64];
+	uint64_t last_pfc = 0, this_pfc = 0;
+	uint64_t last_cnp = 0, this_cnp = 0;
+
 	last_iters = calloc(num_of_qps, sizeof(uint64_t));
 
 	if (user_param->profiling_file) {
@@ -3969,6 +3990,83 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 		}
 		fgets(tx_bytes_buffer, 256, tx_file);
 		tx_bytes = atoll(tx_bytes_buffer);
+	}
+	
+	if (user_param->profiling_pfc) {
+		/* TODO: fix the fixed eth dev name. Currently no ibdev to netdev natively available */
+		strncpy(ifr.ifr_name, "ens2np0", IFNAMSIZ - 1);
+
+		struct ethtool_drvinfo drvinfo;
+		memset(&drvinfo, 0, sizeof(drvinfo));
+		drvinfo.cmd = ETHTOOL_GDRVINFO;
+		ifr.ifr_data = (void *)&drvinfo;
+
+		if (ioctl(pfc_fd, SIOCETHTOOL, &ifr) < 0) {
+			perror("Failed to get driver info");
+			close(pfc_fd);
+			return EXIT_FAILURE;
+		}
+
+		int n_stats = drvinfo.n_stats;
+		if (n_stats < 1) {
+			fprintf(stderr, "No custom stats found for interface %s\n", "ens2np0");
+			close(pfc_fd);
+			return EXIT_FAILURE;
+    	}
+
+		struct ethtool_gstrings *strings = calloc(1, sizeof(*strings) + n_stats * ETH_GSTRING_LEN);
+		strings->cmd = ETHTOOL_GSTRINGS;
+		strings->string_set = ETH_SS_STATS;
+		strings->len = n_stats;
+		ifr.ifr_data = (void *)strings;
+
+		if (ioctl(pfc_fd, SIOCETHTOOL, &ifr) < 0) {
+			perror("Failed to get stat strings");
+			free(strings);
+			close(pfc_fd);
+			return EXIT_FAILURE;
+		}
+
+		for (int i = 0; i < n_stats; i++) {
+			char *stat_name = (char *)&strings->data[i * ETH_GSTRING_LEN];
+			if (strcmp(stat_name, "rx_pause_ctrl_phy") == 0) {
+				pfc_idx = i;
+				break;
+			}
+		}
+
+		free(strings);
+
+		if (pfc_idx == -1) {
+			fprintf(stderr, "Error: Counter rx_pause_ctrl_phy not found on interface ens2np0\n");
+			close(pfc_fd);
+			return EXIT_FAILURE;
+		}
+
+		eth_stats = calloc(1, sizeof(*eth_stats) + n_stats * sizeof(uint64_t));
+		eth_stats->cmd = ETHTOOL_GSTATS;
+		eth_stats->n_stats = n_stats;
+
+		ifr.ifr_data = (void *)eth_stats;
+		if (ioctl(pfc_fd, SIOCETHTOOL, &ifr) < 0) {
+            perror("Failed to get stats");
+            return EXIT_FAILURE;
+        }
+
+		/* initial PFC counter */
+		last_pfc = eth_stats->data[pfc_idx];
+	}
+
+	if (user_param->profiling_cnp) {
+		sprintf(hw_counter_string, "/sys/class/infiniband/%s/ports/1/hw_counters/rp_cnp_handled", user_param->ib_devname);
+		cnp_fd = open(hw_counter_string, O_RDONLY);
+		if (cnp_fd < 0) {
+			fprintf(stderr, "Failed to open %s: %s\n", hw_counter_string, strerror(errno));
+        	return EXIT_FAILURE;
+		}
+		int bytes_read = pread(cnp_fd, cnp_buf, sizeof(cnp_buf) - 1, 0);
+		cnp_buf[bytes_read] = '\0';
+		last_cnp = strtoull(cnp_buf, NULL, 10);
 	}
 
 	struct dyn_poll_ctx *dyn_ctx = init_dyn_poll_ctx(user_param);
@@ -4300,6 +4398,22 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				xput_gbps = (double)(tx_bytes_curr - tx_bytes) * bytes_to_gbps / (curr_cycle - last_prof_cycle) / 1e9;
 			}
 
+			/* also pfc and cnp */
+			if (user_param->profiling_pfc) {
+				ifr.ifr_data = (void *)eth_stats;
+				if (ioctl(pfc_fd, SIOCETHTOOL, &ifr) < 0) {
+					perror("Failed to get stats");
+					break;
+				}
+				this_pfc = eth_stats->data[pfc_idx];
+			}
+
+			if (user_param->profiling_cnp) {
+				int bytes_read = pread(cnp_fd, cnp_buf, sizeof(cnp_buf) - 1, 0);
+				cnp_buf[bytes_read] = '\0';
+				this_cnp = strtoull(cnp_buf, NULL, 10);
+			}
+
 			/* 2. per-QP goodput and static throughput */
 			double interval_sum = 0;
 			for (int i = 0; i < num_of_qps; i++) {
@@ -4315,13 +4429,33 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				if (user_param->profiling_file) {
 					if (user_param->profiling_hwctr)
 						fprintf(result_file, "%lu,%d,%f,%f,%f\n", curr_cycle, i, interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
-					else
-						fprintf(result_file, "%lu,%d,%f,%f\n", curr_cycle, i, interval_gbps, interval_gbps * xput_scale_ratio);
+					else {
+						fprintf(result_file, "%lu,%d,%f,%f", curr_cycle, i, interval_gbps, interval_gbps * xput_scale_ratio);
+						if (i == 0 && user_param->profiling_pfc) {
+							fprintf(result_file, ",%lu", this_pfc - last_pfc);
+							last_pfc = this_pfc;
+						}
+						if (i == 0 && user_param->profiling_cnp) {
+							fprintf(result_file, ",%lu", this_cnp - last_cnp);
+							last_cnp = this_cnp;
+						}
+						fprintf(result_file, "\n");
+					}
 				} else {
 					if (user_param->profiling_hwctr)
 						printf("QP: %d, Interval gbps: %f Gbps (goodput), %f Gbps (xput static), %f Gbps (xput dynamic)\n", i, interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
-					else
-						printf("QP: %d, Interval gbps: %f Gbps (goodput), %f Gbps (xput static)\n", i, interval_gbps, interval_gbps * xput_scale_ratio);
+					else {
+						printf("QP: %d, Interval gbps: %f Gbps (goodput), %f Gbps (xput static)", i, interval_gbps, interval_gbps * xput_scale_ratio);
+						if (i == 0 && user_param->profiling_pfc) {
+							printf(", PFC: %lu", this_pfc - last_pfc);
+							last_pfc = this_pfc;
+						}
+						if (i == 0 && user_param->profiling_cnp) {
+							printf(", CNP: %lu", this_cnp - last_cnp);
+							last_cnp = this_cnp;
+						}
+						printf("\n");
+					}
 				}
 				interval_sum += interval_gbps;
 			}
