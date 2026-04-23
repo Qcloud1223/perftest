@@ -3923,8 +3923,16 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 		result_file = fopen(file_buffer, "w");
 		if (user_param->profiling_hwctr)
 			fprintf(result_file, "cycle,QP,goodput(Gbps),static throughput(Gbps),dynamic throughput(Gbps)\n");
-		else
-			fprintf(result_file, "cycle,QP,goodput(Gbps),static throughput(Gbps)\n");
+		else {
+			fprintf(result_file, "cycle,QP,goodput(Gbps),static throughput(Gbps)");
+			if (user_param->profiling_pfc) {
+				fprintf(result_file, ",PFC");
+			}
+			if (user_param->profiling_cnp) {
+				fprintf(result_file, ",CNP");
+			}
+			fprintf(result_file, "\n");
+		}
 	}
 
 	/* write the timestamp each time we polled out some CQEs
