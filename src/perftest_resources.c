@@ -3841,6 +3841,25 @@ static uint64_t num_send, num_complete, num_unique_send;
 static uint64_t cycle_send, cycle_complete;
 /* idle monitoring */
 static uint64_t empty_post, empty_poll;
+
+/* TSC -> wall-clock calibration. Captured once at the start of run_iter_bw so
+ * that rdtsc cycle counts can be mapped to CLOCK_REALTIME nanoseconds, which
+ * makes timestamps comparable across machines (assuming NTP/PTP keeps the
+ * wall clocks aligned). The hot path still uses get_cycles(); conversion
+ * happens only when we serialize a record to disk.
+ */
+static uint64_t tsc_calib_cycles;
+static uint64_t tsc_calib_realtime_ns;
+static uint64_t tsc_calib_hz;
+
+static inline uint64_t cycles_to_ns(uint64_t cycles)
+{
+	uint64_t delta = cycles - tsc_calib_cycles;
+	uint64_t sec = delta / tsc_calib_hz;
+	uint64_t rem = delta - sec * tsc_calib_hz;
+	return tsc_calib_realtime_ns + sec * 1000000000ULL
+		+ (rem * 1000000000ULL) / tsc_calib_hz;
+}
 int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_param)
 {
 	uint64_t           	totscnt = 0;
@@ -3922,9 +3941,9 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 		printf("Writing results to %s\n", file_buffer);
 		result_file = fopen(file_buffer, "w");
 		if (user_param->profiling_hwctr)
-			fprintf(result_file, "cycle,QP,goodput(Gbps),static throughput(Gbps),dynamic throughput(Gbps)\n");
+			fprintf(result_file, "timestamp_ns,QP,goodput(Gbps),static throughput(Gbps),dynamic throughput(Gbps)\n");
 		else {
-			fprintf(result_file, "cycle,QP,goodput(Gbps),static throughput(Gbps)");
+			fprintf(result_file, "timestamp_ns,QP,goodput(Gbps),static throughput(Gbps)");
 			if (user_param->profiling_pfc) {
 				fprintf(result_file, ",PFC");
 			}
@@ -4147,6 +4166,23 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 	/* unconditionally reset CPU freq according to msr */
 	cpu_hz = get_tsc_freq_arch();
 	cpu_mhz = get_tsc_freq_arch() / 1000000;
+
+	/* Calibrate TSC -> CLOCK_REALTIME. Bracket the clock_gettime() with two
+	 * rdtsc reads and use the midpoint, so the captured cycle count lines
+	 * up with the wall-clock sample to within ~half a clock_gettime call.
+	 */
+	{
+		struct timespec calib_ts;
+		uint64_t c0, c1;
+		c0 = get_cycles();
+		clock_gettime(CLOCK_REALTIME, &calib_ts);
+		c1 = get_cycles();
+		tsc_calib_cycles = c0 + ((c1 - c0) >> 1);
+		tsc_calib_realtime_ns = (uint64_t)calib_ts.tv_sec * 1000000000ULL
+			+ (uint64_t)calib_ts.tv_nsec;
+		tsc_calib_hz = cpu_hz;
+	}
+
 	/* message size in bits / number of seconds
 	 * number of seconds = number of cycles / CPU freq in Hz
 	 * 		-> gbps = iter_to_gbps * iters / cycles
@@ -4241,7 +4277,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 					}
 					/* do latency sampling once per queue */
 					if (ctx->scnt[index] % user_param->tx_depth == 0) {
-						int bytes = sprintf(lat_buffer, "%llu,S\n", last_send);
+						int bytes = sprintf(lat_buffer, "%lu,S\n", cycles_to_ns(last_send));
 						if (bytes <= 0) {
 							fprintf(stderr, "sprintf failed\n");
 							exit(-1);
@@ -4330,7 +4366,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 						if (user_param->track_lat) {
 							/* find the exact request we are tracking */
 							if (ctx->ccnt[qp_index] % user_param->tx_depth == 0) {
-								int bytes = sprintf(lat_buffer, "%llu,R\n", get_cycles());
+								int bytes = sprintf(lat_buffer, "%lu,R\n", cycles_to_ns(get_cycles()));
 								if (bytes <= 0) {
 									fprintf(stderr, "sprintf failed\n");
 									exit(-1);
@@ -4365,7 +4401,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 					cycle_complete += cycle_curr - last_complete;
 					if (user_param->cqe_timestamp) {
 						/* TODO: check if sprintf is fast enough? */
-						int bytes = sprintf(cqe_buffer, "%lu,%d,%lu\n", cycle_curr, ne, empty_poll);
+						int bytes = sprintf(cqe_buffer, "%lu,%d,%lu\n", cycles_to_ns(cycle_curr), ne, empty_poll);
 						if (bytes <= 0) {
 							fprintf(stderr, "sprintf failed\n");
 							exit(-1);
@@ -4423,6 +4459,7 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 			}
 
 			/* 2. per-QP goodput and static throughput */
+			uint64_t curr_ts_ns = cycles_to_ns(curr_cycle);
 			double interval_sum = 0;
 			for (int i = 0; i < num_of_qps; i++) {
 				/* calculate xput based on completion count
@@ -4436,9 +4473,9 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				// printf("Interval gbps: %f Gbps, totccnt: %lu, totscnt: %lu, tot_iters: %lu, interval_iter: %lu\n", interval_gbps, totccnt, totscnt, tot_iters, interval_iter);
 				if (user_param->profiling_file) {
 					if (user_param->profiling_hwctr)
-						fprintf(result_file, "%lu,%d,%f,%f,%f\n", curr_cycle, i, interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
+						fprintf(result_file, "%lu,%d,%f,%f,%f\n", curr_ts_ns, i, interval_gbps, interval_gbps * xput_scale_ratio, xput_gbps);
 					else {
-						fprintf(result_file, "%lu,%d,%f,%f", curr_cycle, i, interval_gbps, interval_gbps * xput_scale_ratio);
+						fprintf(result_file, "%lu,%d,%f,%f", curr_ts_ns, i, interval_gbps, interval_gbps * xput_scale_ratio);
 						if (i == 0 && user_param->profiling_pfc) {
 							fprintf(result_file, ",%lu", this_pfc - last_pfc);
 							last_pfc = this_pfc;
@@ -4473,9 +4510,9 @@ int run_iter_bw(struct pingpong_context *ctx,struct perftest_parameters *user_pa
 				/* use QP -1 to signify the sum of all */
 				if (user_param->profiling_file) {
 					if (user_param->profiling_hwctr)
-						fprintf(result_file, "%lu,%d,%f,%f,%f\n", curr_cycle, -1, interval_sum, interval_sum * xput_scale_ratio, xput_gbps);
+						fprintf(result_file, "%lu,%d,%f,%f,%f\n", curr_ts_ns, -1, interval_sum, interval_sum * xput_scale_ratio, xput_gbps);
 					else
-						fprintf(result_file, "%lu,%d,%f,%f\n", curr_cycle, -1, interval_sum, interval_sum * xput_scale_ratio);
+						fprintf(result_file, "%lu,%d,%f,%f\n", curr_ts_ns, -1, interval_sum, interval_sum * xput_scale_ratio);
 				} else {
 					if (user_param->profiling_hwctr)
 						printf("QP: %d, Interval gbps: %f Gbps (goodput), %f Gbps (xput static), %f Gbps (xput dynamic), bandwidth util: %.3f\n", -1, interval_sum, interval_sum * xput_scale_ratio, xput_gbps, interval_sum * xput_scale_ratio/xput_gbps);
